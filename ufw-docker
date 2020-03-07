@@ -21,12 +21,13 @@ function ufw-docker--list() {
     local INSTANCE_NAME="$1"
     local INSTANCE_PORT="${2:-}"
     local PROTO="${3:-${DEFAULT_PROTO}}"
+    local FROM="${4:-any}"
 
     if [[ -z "$INSTANCE_PORT" ]]; then
         INSTANCE_PORT="[[:digit:]]\\+"
         PROTO="\\(tcp\\|udp\\)"
     fi
-    ufw status numbered | grep "# allow ${INSTANCE_NAME}\\( ${INSTANCE_PORT}\\/${PROTO}\\)\\?\$"
+    ufw status numbered | grep "# allow ${INSTANCE_NAME} from ${FROM}\\( ${INSTANCE_PORT}\\/${PROTO}\\)\\?\$"
 }
 
 function ufw-docker--list-number() {
@@ -44,6 +45,7 @@ function ufw-docker--allow() {
     local INSTANCE_NAME="$1"
     local INSTANCE_PORT="$2"
     local PROTO="$3"
+    local FROM="$4"
 
     docker inspect "$INSTANCE_NAME" &>/dev/null ||
         die "Docker instance \"$INSTANCE_NAME\" doesn't exist."
@@ -63,7 +65,7 @@ function ufw-docker--allow() {
     for PORT_PROTO in "${PORT_PROTO_LIST[@]}"; do
         if [[ -z "$INSTANCE_PORT" || "$PORT_PROTO" = "${INSTANCE_PORT}/${PROTO}" ]]; then
             for IP in "${INSTANCE_IP_ADDRESSES[@]}"; do
-                ufw-docker--add-rule "$INSTANCE_NAME" "$IP" "${PORT_PROTO%/*}" "${PORT_PROTO#*/}"
+                ufw-docker--add-rule "$INSTANCE_NAME" "$IP" "${PORT_PROTO%/*}" "${PORT_PROTO#*/}" "${FROM}"
                 RETVAL="$?"
             done
         fi
@@ -92,24 +94,25 @@ function ufw-docker--add-rule() {
     local INSTANCE_IP_ADDRESS="$2"
     local PORT="$3"
     local PROTO="$4"
+    local FROM="${5:-any}"
 
     declare comment
 
     echo "allow ${INSTANCE_NAME} ${PORT}/${PROTO}"
     typeset -a UFW_OPTS
     UFW_OPTS=(route allow proto "${PROTO}"
-              from any to "$INSTANCE_IP_ADDRESS")
-    comment="allow ${INSTANCE_NAME}"
+              from "${FROM}" to "$INSTANCE_IP_ADDRESS")
+    comment="allow ${INSTANCE_NAME} from ${FROM}"
     [[ -n "$PORT" ]] && {
         UFW_OPTS+=(port "${PORT}")
         comment="$comment ${PORT}/${PROTO}"
     }
     UFW_OPTS+=(comment "$comment")
 
-    if ufw-docker--list "$INSTANCE_NAME" "$PORT" "$PROTO" &>/dev/null; then
+    if ufw-docker--list "$INSTANCE_NAME" "$PORT" "$PROTO" "$FROM" &>/dev/null; then
         ufw --dry-run "${UFW_OPTS[@]}" | grep "^Skipping" && return 0
         err "Remove outdated rule."
-        ufw-docker--delete "$INSTANCE_NAME" "$PORT" "$PROTO"
+        ufw-docker--delete "$INSTANCE_NAME" "$PORT" "$PROTO" "$FROM"
     fi
     echo ufw "${UFW_OPTS[@]}"
     ufw "${UFW_OPTS[@]}"
@@ -406,6 +409,10 @@ case "$ufw_action" in
         if [[ -n "$INSTANCE_PORT" && ! "$INSTANCE_PORT" =~ [0-9]+(/(tcp|udp))? ]]; then
             die "invalid port syntax: \"$INSTANCE_PORT\"."
         fi
+        shift || true
+
+        FROM="${1:-any}"
+        shift || true
 
         PROTO="$DEFAULT_PROTO"
         if [[ "$INSTANCE_PORT" = */udp ]]; then
@@ -414,7 +421,7 @@ case "$ufw_action" in
 
         INSTANCE_PORT="${INSTANCE_PORT%/*}"
 
-        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO"
+        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$FROM"
         ;;
     service|raw-command|add-service-rule)
         shift || true
